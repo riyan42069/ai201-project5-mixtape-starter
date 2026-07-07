@@ -53,3 +53,27 @@ Association tables:
 - Bug 1 (`streak_service.py`): The streak never increments on Mondays because of an extra `today.weekday() != 6` check that blocks the Sunday-to-Monday transition.
 - Bug 2 (`feed_service.py`): The "listening now" window is 24 hours, so people who listened yesterday still show up as currently listening.
 - Bug 3 (`search_service.py`): A song with multiple tags appears multiple times in search results because the join with `song_tags` produces one row per tag.
+
+## Bug Detection
+
+- Bug 1 (`streak_service.py`): It was reproduced by setting a user's `last_listened_at` to a Saturday and calling `update_listening_streak` with a Sunday datetime. The streak reset to 1 instead of incrementing to 6, confirming the `today.weekday() != 6` condition blocks the increment whenever today is Sunday.
+- Bug 2 (`feed_service.py`): It was reproduced by calling `GET /feed/<user_id>/listening-now` against the seeded database, which contains friends with listening events from 10–18 hours ago. Those friends appeared in the "listening now" response even though they had not listened recently, confirming the 24-hour threshold is too wide.
+- Bug 3 (`search_service.py`): It was reproduced by calling `GET /songs/search?q=crown` against the seeded database, which contains "Crown Heights Anthem" with 3 tags. The song appeared 3 times in the results, confirming the `outerjoin` on `song_tags` produces one row per tag for songs with multiple tags.
+
+---
+
+## Root Cause Analysis
+
+### Bug 1 — Streak does not increment on Sundays
+
+**How I reproduced it:**
+Set a user's `last_listened_at` to Saturday July 4 and called `update_listening_streak` directly with a Sunday July 5 datetime (weekday 6). The streak was 5 before the call and reset to 1 instead of incrementing to 6.
+
+**How I found the root cause:**
+Started at the route `POST /songs/<song_id>/listen` in `routes/songs.py`. The route calls `record_listening_event(user_id, song_id)` from `streak_service.py`. Inside `record_listening_event`, the only streak-related call is `update_listening_streak(user, now)` on line 36. Reading `update_listening_streak` in `streak_service.py`, the increment branch on line 73 had an extra condition: `today.weekday() != 6`. That was the only conditional guarding the increment and it was the only place the streak could be blocked while `days_since_last == 1`.
+
+**The root cause:**
+Python's `datetime.weekday()` returns 6 for Sunday. The condition `days_since_last == 1 and today.weekday() != 6` means the streak only increments if the user listened yesterday AND today is not Sunday. When a user listens on Saturday and again on Sunday, `days_since_last == 1` is true but `today.weekday() != 6` is false, so the condition fails and the streak resets to 1. The extra weekday check has no valid purpose — consecutive-day streak logic should apply equally on every day of the week.
+
+**The fix and side-effect check:**
+Removed the `and today.weekday() != 6` clause, leaving `elif days_since_last == 1:` as the only condition for incrementing. The other two branches (`days_since_last == 0` and the else reset) are unaffected. Verified that a Saturday-to-Sunday transition now increments correctly and that the `days_since_last == 0` (already listened today) and reset (gap > 1 day) paths still behave correctly with the same test inputs.
