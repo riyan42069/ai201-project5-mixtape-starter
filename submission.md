@@ -93,3 +93,19 @@ Started at the route `GET /feed/<user_id>/listening-now` in `routes/feed.py`. Th
 
 **The fix and side-effect check:**
 Changed `RECENT_THRESHOLD = timedelta(hours=24)` to `RECENT_THRESHOLD = timedelta(minutes=30)`. The constant is only used in `get_friends_listening_now` — `get_activity_feed` has no recency filter by design, so it is unaffected. Verified that friends with events older than 30 minutes no longer appear and that friends with events within the last 30 minutes still do.
+
+---
+
+### Bug 3 — Songs with multiple tags appear multiple times in search results
+
+**How I reproduced it:**
+Called `GET /songs/search?q=crown` against the seeded database. "Crown Heights Anthem" has 3 tags (rap, hip-hop, boom bap) and appeared 3 times in the results. Searching for a song with 1 tag returned it once, and a song with no tags also returned once, confirming the duplicate count matched the number of tags.
+
+**How I found the root cause:**
+Started at the route `GET /songs/search` in `routes/songs.py`, which calls `search_songs(query)` from `search_service.py`. In `search_songs`, the query does an `outerjoin` on the `song_tags` association table before filtering by title and artist. An outer join on a many-to-many table produces one row per related row — so a song with 3 tags produces 3 rows in the result set, each becoming a separate entry in the returned list.
+
+**The root cause:**
+The `outerjoin(song_tags, Song.id == song_tags.c.song_id)` is not used anywhere in the filter — the filter only checks `Song.title` and `Song.artist`. The join was added unnecessarily, and because `song_tags` is a many-to-many table, SQLAlchemy returns one `Song` row per matching tag row. A song with 3 tags is returned 3 times. The tags are already available on each `Song` object via the `Song.tags` relationship, which `to_dict()` uses directly.
+
+**The fix and side-effect check:**
+Removed the `outerjoin` call entirely, leaving the query as a plain filter on `Song`. The filter logic and the tag loading in `to_dict()` are both unaffected. Verified that `GET /songs/search?q=crown` now returns "Crown Heights Anthem" exactly once with all 3 tags present, and that songs with 0 or 1 tags also return correctly.
