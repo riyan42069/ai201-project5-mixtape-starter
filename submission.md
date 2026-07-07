@@ -6,9 +6,6 @@ I used Claude  as an AI assistant throughout this project. I used it to:
 - Trace data flow: for each bug, I described the route and asked it to walk me through the call chain so I understood which function was ultimately responsible for the behavior I was seeing.
 - Understand how functions worked together: I shared specific functions (like `update_listening_streak` and `search_songs`) and asked it to explain what each branch did and what edge cases could cause incorrect behavior.
 - Test bug fixes — I used it to help me write Python scripts that called service functions directly with controlled inputs, which let me confirm bugs existed before touching any code and verify fixes worked after.
-
-In all cases, I had already located the relevant code myself before involving AI. I used it to deepen my understanding of code I had already found, not to locate bugs on my behalf.
-
 ---
 
 ## Codebase Map
@@ -105,7 +102,7 @@ Started at the route `GET /feed/<user_id>/listening-now` in `routes/feed.py`. Th
 `RECENT_THRESHOLD` was set to `timedelta(hours=24)`, making the cutoff 24 hours in the past. Any friend who listened within the last day would appear as "listening now", including people who listened 18 hours ago. The feature is meant to show who is actively listening at this moment, so the threshold should be a short window of around 30 minutes.
 
 **The fix and side-effect check:**
-Changed `RECENT_THRESHOLD = timedelta(hours=24)` to `RECENT_THRESHOLD = timedelta(minutes=30)`. The constant is only used in `get_friends_listening_now` — `get_activity_feed` has no recency filter by design, so it is unaffected. Verified that friends with events older than 30 minutes no longer appear and that friends with events within the last 30 minutes still do.
+Changed `RECENT_THRESHOLD = timedelta(hours=24)` to `RECENT_THRESHOLD = timedelta(minutes=30)`. The constant is only used in `get_friends_listening_now` `get_activity_feed` has no recency filter by design, so it is unaffected. Verified that friends with events older than 30 minutes no longer appear and that friends with events within the last 30 minutes still do.
 
 ---
 
@@ -115,10 +112,26 @@ Changed `RECENT_THRESHOLD = timedelta(hours=24)` to `RECENT_THRESHOLD = timedelt
 Called `GET /songs/search?q=crown` against the seeded database. "Crown Heights Anthem" has 3 tags (rap, hip-hop, boom bap) and appeared 3 times in the results. Searching for a song with 1 tag returned it once, and a song with no tags also returned once, confirming the duplicate count matched the number of tags.
 
 **How I found the root cause:**
-Started at the route `GET /songs/search` in `routes/songs.py`, which calls `search_songs(query)` from `search_service.py`. In `search_songs`, the query does an `outerjoin` on the `song_tags` association table before filtering by title and artist. An outer join on a many-to-many table produces one row per related row — so a song with 3 tags produces 3 rows in the result set, each becoming a separate entry in the returned list.
+Started at the route `GET /songs/search` in `routes/songs.py`, which calls `search_songs(query)` from `search_service.py`. In `search_songs`, the query does an `outerjoin` on the `song_tags` association table before filtering by title and artist. An outer join on a many-to-many table produces one row per related row so a song with 3 tags produces 3 rows in the result set, each becoming a separate entry in the returned list.
 
 **The root cause:**
-The `outerjoin(song_tags, Song.id == song_tags.c.song_id)` is not used anywhere in the filter — the filter only checks `Song.title` and `Song.artist`. The join was added unnecessarily, and because `song_tags` is a many-to-many table, SQLAlchemy returns one `Song` row per matching tag row. A song with 3 tags is returned 3 times. The tags are already available on each `Song` object via the `Song.tags` relationship, which `to_dict()` uses directly.
+The `outerjoin(song_tags, Song.id == song_tags.c.song_id)` is not used anywhere in the filter. the filter only checks `Song.title` and `Song.artist`. The join was added unnecessarily, and because `song_tags` is a many-to-many table, SQLAlchemy returns one `Song` row per matching tag row. A song with 3 tags is returned 3 times. The tags are already available on each `Song` object via the `Song.tags` relationship, which `to_dict()` uses directly.
 
 **The fix and side-effect check:**
 Removed the `outerjoin` call entirely, leaving the query as a plain filter on `Song`. The filter logic and the tag loading in `to_dict()` are both unaffected. Verified that `GET /songs/search?q=crown` now returns "Crown Heights Anthem" exactly once with all 3 tags present, and that songs with 0 or 1 tags also return correctly.
+
+---
+
+### Bug 4 — Last song in a playlist is never returned
+
+**How I reproduced it:**
+Called `GET /playlists/<playlist_id>/songs` against the seeded database. The "Late Night Vibes" playlist has 7 songs added at positions 1–7. The response returned only 6 songs position 7 was always missing regardless of which playlist was queried.
+
+**How I found the root cause:**
+Started at the route `GET /playlists/<playlist_id>/songs` in `routes/playlists.py`, which calls `get_playlist_songs(playlist_id)` from `playlist_service.py`. The function queries songs ordered by position and returns them. The last line of the function is `return [song.to_dict() for song in songs[:-1]]`. Python's `songs[:-1]` slice returns all elements except the last one, so the final song is always dropped before the list is returned.
+
+**The root cause:**
+`songs[:-1]` is a Python slice that excludes the last element of a list. The query correctly retrieves all songs in position order, but the slice on the return line silently drops the last one. A playlist with 7 songs returns 6, a playlist with 1 song returns an empty list. There is no valid reason to exclude the last element the docstring explicitly states the function should return all songs.
+
+**The fix and side-effect check:**
+Changed `songs[:-1]` to `songs` so the full list is returned. The query, ordering, and `to_dict()` serialization are all unaffected. Verified that a 7-song playlist now returns all 7 songs and that an empty playlist still returns an empty list.
