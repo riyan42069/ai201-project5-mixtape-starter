@@ -1,3 +1,16 @@
+## AI Usage
+
+I used Claude  as an AI assistant throughout this project. I used it to:
+
+- Understand the codebase structure:I asked it to explain how the blueprints, models, and services fit together and how data flows between them when a request comes in.
+- Trace data flow: for each bug, I described the route and asked it to walk me through the call chain so I understood which function was ultimately responsible for the behavior I was seeing.
+- Understand how functions worked together: I shared specific functions (like `update_listening_streak` and `search_songs`) and asked it to explain what each branch did and what edge cases could cause incorrect behavior.
+- Test bug fixes — I used it to help me write Python scripts that called service functions directly with controlled inputs, which let me confirm bugs existed before touching any code and verify fixes worked after.
+
+In all cases, I had already located the relevant code myself before involving AI. I used it to deepen my understanding of code I had already found, not to locate bugs on my behalf.
+
+---
+
 ## Codebase Map
 
 ### Entry Point -- **`app.py`** 
