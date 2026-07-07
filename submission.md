@@ -77,3 +77,19 @@ Python's `datetime.weekday()` returns 6 for Sunday. The condition `days_since_la
 
 **The fix and side-effect check:**
 Removed the `and today.weekday() != 6` clause, leaving `elif days_since_last == 1:` as the only condition for incrementing. The other two branches (`days_since_last == 0` and the else reset) are unaffected. Verified that a Saturday-to-Sunday transition now increments correctly and that the `days_since_last == 0` (already listened today) and reset (gap > 1 day) paths still behave correctly with the same test inputs.
+
+---
+
+### Bug 2 — "Listening now" feed shows friends who listened up to 24 hours ago
+
+**How I reproduced it:**
+Called `GET /feed/<nova-id>/listening-now` against the seeded database. Nova's friends had listening events from 10–18 hours ago. Those friends appeared in the response even though they had not listened recently, confirming the recency window was too wide.
+
+**How I found the root cause:**
+Started at the route `GET /feed/<user_id>/listening-now` in `routes/feed.py`. The route calls `get_friends_listening_now(user_id)` from `feed_service.py`. At the top of `feed_service.py`, the module-level constant `RECENT_THRESHOLD = timedelta(hours=24)` is used to compute the cutoff: `cutoff = datetime.now(timezone.utc) - RECENT_THRESHOLD`. That single constant controls the entire window and was the only value to check.
+
+**The root cause:**
+`RECENT_THRESHOLD` was set to `timedelta(hours=24)`, making the cutoff 24 hours in the past. Any friend who listened within the last day would appear as "listening now", including people who listened 18 hours ago. The feature is meant to show who is actively listening at this moment, so the threshold should be a short window of around 30 minutes.
+
+**The fix and side-effect check:**
+Changed `RECENT_THRESHOLD = timedelta(hours=24)` to `RECENT_THRESHOLD = timedelta(minutes=30)`. The constant is only used in `get_friends_listening_now` — `get_activity_feed` has no recency filter by design, so it is unaffected. Verified that friends with events older than 30 minutes no longer appear and that friends with events within the last 30 minutes still do.
