@@ -5,12 +5,12 @@ I used Claude  as an AI assistant throughout this project. I used it to:
 - Understand the codebase structure:I asked it to explain how the blueprints, models, and services fit together and how data flows between them when a request comes in.
 - Trace data flow: for each bug, I described the route and asked it to walk me through the call chain so I understood which function was ultimately responsible for the behavior I was seeing.
 - Understand how functions worked together: I shared specific functions (like `update_listening_streak` and `search_songs`) and asked it to explain what each branch did and what edge cases could cause incorrect behavior.
-- Test bug fixes — I used it to help me write Python scripts that called service functions directly with controlled inputs, which let me confirm bugs existed before touching any code and verify fixes worked after.
+- Test bug fixes. I used it to help me write Python scripts that called service functions directly with controlled inputs, which let me confirm bugs existed before touching any code and verify fixes worked after.
 ---
 
 ## Codebase Map
 
-### Entry Point -- **`app.py`** 
+### Entry Point. **`app.py`** 
 
 ### Data Models (`models.py`)
 
@@ -42,7 +42,7 @@ Association tables:
 - `playlist_service.py`: It creates playlists and retrieves a playlist's songs ordered by their position.
 
 
-## Data Flow — User Rates a Song
+## Data Flow. User Rates a Song
 
 - `POST /songs/<song_id>/rate` receives `user_id` and `score` in the request body.
 - `routes/songs.py: rate()` validates that both fields are present and casts score to an int.
@@ -53,8 +53,8 @@ Association tables:
 
 ## Patterns in the Codebase
 
-- Routes are thin — every route just parses the request, calls one service function, and returns the result. All the real logic is in the services.
-- Services own validation — every service checks its inputs first and raises a `ValueError` if something is wrong. Routes catch that and return a 4xx error.
+- Routes are thin. every route just parses the request, calls one service function, and returns the result. All the real logic is in the services.
+- Services own validation. every service checks its inputs first and raises a `ValueError` if something is wrong. Routes catch that and return a 4xx error.
 
 ---
 
@@ -74,7 +74,7 @@ Association tables:
 
 ## Root Cause Analysis
 
-### Bug 1 — Streak does not increment on Sundays
+### Bug 1. Streak does not increment on Sundays
 
 **How I reproduced it:**
 Set a user's `last_listened_at` to Saturday July 4 and called `update_listening_streak` directly with a Sunday July 5 datetime (weekday 6). The streak was 5 before the call and reset to 1 instead of incrementing to 6.
@@ -83,14 +83,14 @@ Set a user's `last_listened_at` to Saturday July 4 and called `update_listening_
 Started at the route `POST /songs/<song_id>/listen` in `routes/songs.py`. The route calls `record_listening_event(user_id, song_id)` from `streak_service.py`. Inside `record_listening_event`, the only streak-related call is `update_listening_streak(user, now)` on line 36. Reading `update_listening_streak` in `streak_service.py`, the increment branch on line 73 had an extra condition: `today.weekday() != 6`. That was the only conditional guarding the increment and it was the only place the streak could be blocked while `days_since_last == 1`.
 
 **The root cause:**
-Python's `datetime.weekday()` returns 6 for Sunday. The condition `days_since_last == 1 and today.weekday() != 6` means the streak only increments if the user listened yesterday AND today is not Sunday. When a user listens on Saturday and again on Sunday, `days_since_last == 1` is true but `today.weekday() != 6` is false, so the condition fails and the streak resets to 1. The extra weekday check has no valid purpose — consecutive-day streak logic should apply equally on every day of the week.
+Python's `datetime.weekday()` returns 6 for Sunday. The condition `days_since_last == 1 and today.weekday() != 6` means the streak only increments if the user listened yesterday AND today is not Sunday. When a user listens on Saturday and again on Sunday, `days_since_last == 1` is true but `today.weekday() != 6` is false, so the condition fails and the streak resets to 1. The extra weekday check has no valid purpose. consecutive-day streak logic should apply equally on every day of the week.
 
 **The fix and side-effect check:**
 Removed the `and today.weekday() != 6` clause, leaving `elif days_since_last == 1:` as the only condition for incrementing. The other two branches (`days_since_last == 0` and the else reset) are unaffected. Verified that a Saturday-to-Sunday transition now increments correctly and that the `days_since_last == 0` (already listened today) and reset (gap > 1 day) paths still behave correctly with the same test inputs.
 
 ---
 
-### Bug 2 — "Listening now" feed shows friends who listened up to 24 hours ago
+### Bug 2. "Listening now" feed shows friends who listened up to 24 hours ago
 
 **How I reproduced it:**
 Called `GET /feed/<nova-id>/listening-now` against the seeded database. Nova's friends had listening events from 10–18 hours ago. Those friends appeared in the response even though they had not listened recently, confirming the recency window was too wide.
@@ -106,7 +106,7 @@ Changed `RECENT_THRESHOLD = timedelta(hours=24)` to `RECENT_THRESHOLD = timedelt
 
 ---
 
-### Bug 3 — Songs with multiple tags appear multiple times in search results
+### Bug 3. Songs with multiple tags appear multiple times in search results
 
 **How I reproduced it:**
 Called `GET /songs/search?q=crown` against the seeded database. "Crown Heights Anthem" has 3 tags (rap, hip-hop, boom bap) and appeared 3 times in the results. Searching for a song with 1 tag returned it once, and a song with no tags also returned once, confirming the duplicate count matched the number of tags.
@@ -122,7 +122,7 @@ Removed the `outerjoin` call entirely, leaving the query as a plain filter on `S
 
 ---
 
-### Bug 4 — Last song in a playlist is never returned
+### Bug 4. Last song in a playlist is never returned
 
 **How I reproduced it:**
 Called `GET /playlists/<playlist_id>/songs` against the seeded database. The "Late Night Vibes" playlist has 7 songs added at positions 1–7. The response returned only 6 songs position 7 was always missing regardless of which playlist was queried.
@@ -135,3 +135,19 @@ Started at the route `GET /playlists/<playlist_id>/songs` in `routes/playlists.p
 
 **The fix and side-effect check:**
 Changed `songs[:-1]` to `songs` so the full list is returned. The query, ordering, and `to_dict()` serialization are all unaffected. Verified that a 7-song playlist now returns all 7 songs and that an empty playlist still returns an empty list.
+
+---
+
+### Bug 5. No notification when a friend rates a shared song
+
+**How I reproduced it:**
+Posted a rating via `POST /songs/<song_id>/rate` with a `user_id` different from the song's `shared_by`. The rating was saved correctly and appeared on the song. Checked `GET /users/<song_owner_id>/notifications` immediately after and received an empty list.
+
+**How I found the root cause:**
+Started at the route `POST /songs/<song_id>/rate` in `routes/songs.py`, which calls `rate_song(user_id, song_id, score)` from `notification_service.py`. Read through `rate_song` line by line. it validates the score, fetches the song and user, upserts the rating row, and commits. The function then returns the rating with no further calls. Compared it to `add_to_playlist` in the same file, which follows the same validation and save pattern but then calls `create_notification` for the song owner. `rate_song` had no equivalent call.
+
+**The root cause:**
+`rate_song` saves the rating and commits but never calls `create_notification`. The notification logic was implemented in `add_to_playlist` but not carried over to `rate_song`. Because the commit happens before any notification would be sent, the rating is persisted but the song owner is never alerted.
+
+**The fix and side-effect check:**
+Added a `create_notification` call after the commit in `rate_song`, mirroring the pattern from `add_to_playlist`. The notification is only sent if the rater is not the song's original sharer, matching the same guard used in `add_to_playlist`. Verified that rating a song now creates a notification for the owner, that rating your own song does not create a self-notification, and that the existing `add_to_playlist` notification behavior is unaffected.
